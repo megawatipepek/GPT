@@ -1,120 +1,29 @@
 #!/bin/bash
-# Auto Install SSH + WebSocket VPN Business
-# Fitur:
-# - SSH over WebSocket via Nginx
-# - Panel manajemen akun
-# - Pembuatan akun otomatis
-# - Masa aktif akun
-# - Multi-user support
+# ========================================
+# Installer SSH WebSocket + Cloudflare TLS
+# Elegant CLI Account Creator
+# ========================================
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# === KONFIGURASI ===
+DOMAIN="yourdomain.com"       # Ganti dengan domain kamu yang di-pointing ke VPS
 
-# Check root
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Error: Script harus dijalankan sebagai root!${NC}"
-  exit 1
-fi
+# === WARNA ===
+green='\033[0;32m'
+blue='\033[1;34m'
+red='\033[0;31m'
+nc='\033[0m'
 
-# Banner
-clear
-echo -e "${BLUE}"
-cat << "EOF"
-╔═╗╔═╗╦  ╔═╗╔═╗╔╦╗╔═╗╦═╗╔╦╗
-╚═╗║╣ ║  ║ ║╠═╝ ║ ║ ║╠╦╝ ║ 
-╚═╝╚═╝╩═╝╚═╝╩  ╩ ╚═╝╩╚═ ╩ 
-EOF
-echo -e "${NC}"
-echo -e "${YELLOW}=== Auto Install VPN Business with WebSocket ==="
-echo -e "${NC}"
+# === CEK ROOT ===
+[[ $EUID -ne 0 ]] && { echo -e "${red}Harus dijalankan sebagai root!${nc}"; exit 1; }
 
-# Fungsi validasi domain
-validate_domain() {
-  local domain_regex='^([a-zA-Z0-9](-?[a-zA-Z0-9])*\.)+[a-zA-Z]{2,}$'
-  [[ $1 =~ $domain_regex ]] && return 0 || return 1
-}
+# === UPDATE SISTEM ===
+apt update -y && apt install -y curl nginx stunnel4 python3 python3-pip netcat screen unzip
 
-# Input domain
-while true; do
-  read -p "Masukkan domain Anda (contoh: myvpn.id): " DOMAIN
-  if validate_domain "$DOMAIN"; then
-    break
-  else
-    echo -e "${RED}Format domain tidak valid! Silakan coba lagi.${NC}"
-  fi
-done
+# === SETUP DOMAIN ===
+echo "$DOMAIN" > /etc/domain
 
-# Update sistem
-echo -e "${YELLOW}[1/8] Memperbarui sistem...${NC}"
-apt update -y && apt upgrade -y
-apt install -y curl wget nano git unzip
-
-# Install dependensi
-echo -e "${YELLOW}[2/8] Menginstal dependensi...${NC}"
-apt install -y nginx python3 python3-pip openssl
-
-# Install WebSocket
-echo -e "${YELLOW}[3/8] Menginstal WebSocket SSH...${NC}"
-wget -O /usr/local/bin/ws-ssh https://raw.githubusercontent.com/daybreakersx/premscript/master/ws-ssh
-chmod +x /usr/local/bin/ws-ssh
-
-# Buat service WebSocket
-cat > /etc/systemd/system/ws-ssh.service <<EOF
-[Unit]
-Description=WebSocket SSH Service
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/ws-ssh -port 2082 -ssh 22
-Restart=always
-User=root
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Start WebSocket service
-systemctl daemon-reload
-systemctl enable ws-ssh
-systemctl start ws-ssh
-
-# Konfigurasi Nginx
-echo -e "${YELLOW}[4/8] Mengkonfigurasi Nginx...${NC}"
-rm -f /etc/nginx/sites-enabled/default
-
-cat > /etc/nginx/conf.d/vpn.conf <<EOF
-server {
-    listen 80;
-    server_name $DOMAIN;
-
-    location /ssh-ws {
-        proxy_pass http://127.0.0.1:2082;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
-
-    location / {
-        return 404;
-    }
-}
-EOF
-
-# Install SSL dengan Certbot
-echo -e "${YELLOW}[5/8] Menginstal SSL...${NC}"
-apt install -y certbot python3-certbot-nginx
-certbot --nginx -d $DOMAIN --non-interactive --agree-tos --register-unsafely-without-email
-
-# Update Nginx config untuk SSL
-cat > /etc/nginx/conf.d/vpn.conf <<EOF
+# === KONFIG NGINX (Redirect HTTP ke HTTPS) ===
+cat > /etc/nginx/sites-enabled/default <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -125,218 +34,130 @@ server {
     listen 443 ssl;
     server_name $DOMAIN;
 
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+    ssl_certificate /etc/stunnel/stunnel.pem;
+    ssl_certificate_key /etc/stunnel/stunnel.pem;
 
-    location /ssh-ws {
-        proxy_pass http://127.0.0.1:2082;
+    location / {
+        proxy_pass http://127.0.0.1:80;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    }
-
-    location / {
-        return 404;
     }
 }
 EOF
 
 systemctl restart nginx
 
-# Buat script manajemen akun
-echo -e "${YELLOW}[6/8] Membuat script manajemen...${NC}"
-cat > /usr/local/bin/vpn-manager <<'EOF'
+# === STUNNEL SSL CERT & CONFIG ===
+mkdir -p /etc/stunnel
+openssl req -new -x509 -days 1095 -nodes \
+  -out /etc/stunnel/stunnel.pem \
+  -keyout /etc/stunnel/stunnel.pem \
+  -subj "/C=ID/ST=Indonesia/L=Jakarta/O=Tunneler/CN=$DOMAIN"
+
+cat > /etc/stunnel/stunnel.conf <<EOF
+pid = /var/run/stunnel.pid
+[ws-tls]
+accept = 443
+connect = 80
+EOF
+
+echo "ENABLED=1" > /etc/default/stunnel4
+systemctl enable stunnel4 && systemctl restart stunnel4
+
+# === INSTALL WEBSOCKET SERVER (Python) ===
+cat > /usr/local/bin/ws-server << EOF
+#!/usr/bin/env python3
+import asyncio, websockets, subprocess
+
+async def handler(websocket, path):
+    p = await asyncio.create_subprocess_exec(
+        'nc', '127.0.0.1', '22',
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE
+    )
+    async def ws_to_proc():
+        try:
+            async for msg in websocket:
+                p.stdin.write(msg)
+                await p.stdin.drain()
+        except: p.kill()
+    async def proc_to_ws():
+        try:
+            while True:
+                data = await p.stdout.read(1024)
+                if not data: break
+                await websocket.send(data)
+        except: p.kill()
+    await asyncio.gather(ws_to_proc(), proc_to_ws())
+asyncio.get_event_loop().run_until_complete(
+    websockets.serve(handler, '0.0.0.0', 80)
+)
+asyncio.get_event_loop().run_forever()
+EOF
+
+chmod +x /usr/local/bin/ws-server
+
+cat > /etc/systemd/system/ws-server.service << EOF
+[Unit]
+Description=SSH WebSocket Server
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/ws-server
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reexec
+systemctl enable ws-server
+systemctl start ws-server
+
+# === MENU PEMBUATAN AKUN ELEGAN ===
+cat > /usr/bin/ssh-menu << EOF
 #!/bin/bash
-# VPN Account Manager
+green='\\033[0;32m'
+blue='\\033[1;34m'
+red='\\033[0;31m'
+nc='\\033[0m'
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-generate_password() {
-  tr -dc A-Za-z0-9 </dev/urandom | head -c 12
-}
-
-show_banner() {
-  clear
-  echo -e "${BLUE}"
-  echo "===================================="
-  echo " VPN BUSINESS MANAGEMENT SYSTEM "
-  echo "===================================="
-  echo -e "${NC}"
+function buat_akun() {
+    echo -ne "\${blue}Username:\${nc} "; read user
+    echo -ne "\${blue}Password:\${nc} "; read pass
+    echo -ne "\${blue}Expired (hari):\${nc} "; read exp
+    useradd -e \$(date -d "\$exp days" +%Y-%m-%d) -s /bin/false -M \$user
+    echo "\$user:\$pass" | chpasswd
+    IP=\$(curl -s ifconfig.me)
+    echo -e "\n\${green}=== INFO AKUN SSH ===\${nc}"
+    echo "Host/IP     : \$IP"
+    echo "Username    : \$user"
+    echo "Password    : \$pass"
+    echo "Expired     : \$exp hari"
+    echo "WS Port     : 80 (non-TLS)"
+    echo "TLS Port    : 443"
+    echo "Payload WS  :"
+    echo "GET / HTTP/1.1[crlf]Host: $DOMAIN[crlf]Upgrade: websocket[crlf][crlf]"
+    echo "SNI         : $DOMAIN"
 }
 
 while true; do
-  show_banner
-  echo "1. Buat Akun Baru"
-  echo "2. Perpanjang Akun"
-  echo "3. Hapus Akun"
-  echo "4. List Semua Akun"
-  echo "5. Cek Pengguna Aktif"
-  echo "6. Exit"
-  echo -e "${BLUE}====================================${NC}"
-  
-  read -p "Pilih menu [1-6]: " choice
-  
-  case $choice in
-    1)
-      read -p "Masukkan username: " username
-      if id "$username" &>/dev/null; then
-        echo -e "${RED}User sudah ada!${NC}"
-      else
-        password=$(generate_password)
-        read -p "Masa aktif (hari): " days
-        expire_date=$(date -d "+$days days" +"%Y-%m-%d")
-        
-        useradd -m -s /bin/bash -e $expire_date $username
-        echo "$username:$password" | chpasswd
-        
-        echo -e "${GREEN}"
-        echo "===================================="
-        echo " AKUN BERHASIL DIBUAT "
-        echo "===================================="
-        echo "Host: $DOMAIN"
-        echo "Username: $username"
-        echo "Password: $password"
-        echo "Expired: $expire_date"
-        echo "WebSocket: wss://$DOMAIN/ssh-ws"
-        echo "===================================="
-        echo -e "${NC}"
-      fi
-      ;;
-    2)
-      read -p "Masukkan username: " username
-      if id "$username" &>/dev/null; then
-        read -p "Tambahkan hari aktif: " days
-        new_expire=$(date -d "+$days days" +"%Y-%m-%d")
-        usermod -e $new_expire $username
-        echo -e "${GREEN}Akun $username diperpanjang hingga $new_expire${NC}"
-      else
-        echo -e "${RED}User tidak ditemukan!${NC}"
-      fi
-      ;;
-    3)
-      read -p "Masukkan username: " username
-      if id "$username" &>/dev/null; then
-        userdel -r $username
-        echo -e "${GREEN}Akun $username telah dihapus${NC}"
-      else
-        echo -e "${RED}User tidak ditemukan!${NC}"
-      fi
-      ;;
-    4)
-      echo -e "${BLUE}Daftar Akun VPN:${NC}"
-      echo "===================================="
-      printf "%-15s %-20s\n" "Username" "Expire Date"
-      echo "===================================="
-      for user in $(awk -F: '$7 ~ /\/bash/ {print $1}' /etc/passwd); do
-        expire=$(chage -l $user | grep "Account expires" | cut -d: -f2)
-        printf "%-15s %-20s\n" "$user" "$expire"
-      done
-      echo "===================================="
-      ;;
-    5)
-      echo -e "${BLUE}Pengguna Aktif:${NC}"
-      echo "===================================="
-      who
-      echo "===================================="
-      ;;
-    6)
-      echo "Keluar..."
-      exit 0
-      ;;
-    *)
-      echo -e "${RED}Pilihan tidak valid!${NC}"
-      ;;
-  esac
-  
-  read -p "Tekan Enter untuk melanjutkan..."
+    echo -e "\n\${green}========= MENU SSH =========\${nc}"
+    echo "1. Buat Akun SSH"
+    echo "2. Keluar"
+    read -p "Pilih menu [1-2]: " opt
+    case \$opt in
+        1) buat_akun ;;
+        2) exit ;;
+        *) echo -e "\${red}Pilihan tidak valid!\${nc}" ;;
+    esac
 done
 EOF
 
-chmod +x /usr/local/bin/vpn-manager
+chmod +x /usr/bin/ssh-menu
 
-# Buat cronjob untuk auto-renew SSL
-echo -e "${YELLOW}[7/8] Membuat cronjob auto-renew SSL...${NC}"
-(crontab -l 2>/dev/null; echo "0 0 * * * certbot renew --quiet") | crontab -
-
-# Buat file info
-echo -e "${YELLOW}[8/8] Membuat file informasi...${NC}"
-cat > /root/vpn-info.txt <<EOF
-====================================
- VPN BUSINESS SERVER INFORMATION
-====================================
-Domain: $DOMAIN
-WebSocket URL: wss://$DOMAIN/ssh-ws
-
-Untuk manajemen akun:
-1. Jalankan perintah: vpn-manager
-2. Atau buat akun langsung dengan:
-   vpn-add username days
-
-Fitur:
-- Pembuatan akun mudah
-- Masa aktif customizable
-- WebSocket over SSL
-- Multi-user support
-
-====================================
-EOF
-
-# Buat shortcut pembuatan akun
-cat > /usr/local/bin/vpn-add <<EOF
-#!/bin/bash
-if [ \$# -lt 1 ]; then
-  echo "Usage: vpn-add <username> [days]"
-  exit 1
-fi
-
-username=\$1
-days=\${2:-30} # Default 30 hari
-password=\$(tr -dc A-Za-z0-9 </dev/urandom | head -c 12)
-expire_date=\$(date -d "+\$days days" +"%Y-%m-%d")
-
-useradd -m -s /bin/bash -e \$expire_date \$username
-echo "\$username:\$password" | chpasswd
-
-echo "===================================="
-echo " VPN Account Created "
-echo "===================================="
-echo "Host: $DOMAIN"
-echo "Username: \$username"
-echo "Password: \$password"
-echo "Expired: \$expire_date"
-echo "WebSocket: wss://$DOMAIN/ssh-ws"
-echo "===================================="
-EOF
-
-chmod +x /usr/local/bin/vpn-add
-
-# Selesai
 clear
-echo -e "${GREEN}"
-echo "======================================"
-echo " INSTALASI BERHASIL DILAKUKAN "
-echo "======================================"
-echo -e "${NC}"
-echo -e "Informasi server telah disimpan di ${YELLOW}/root/vpn-info.txt${NC}"
-echo ""
-echo -e "Gunakan perintah berikut untuk manajemen:"
-echo -e "1. ${GREEN}vpn-manager${NC} - Panel manajemen interaktif"
-echo -e "2. ${GREEN}vpn-add username [days]${NC} - Buat akun cepat"
-echo ""
-echo -e "Akses WebSocket VPN via: ${BLUE}wss://$DOMAIN/ssh-ws${NC}"
-echo ""
-echo -e "${GREEN}======================================${NC}"
-echo ""
-
-# Reboot jika diperlukan
-read -p "Reboot server sekarang? (y/n): " reboot_choice
-if [[ "$reboot_choice" == "y" || "$reboot_choice" == "Y" ]]; then
-  reboot
-fi
+echo -e "${green}INSTALLASI BERHASIL!${nc}"
+echo "Jalankan perintah: ${blue}ssh-menu${nc} untuk membuat akun"
