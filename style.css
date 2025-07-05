@@ -1,0 +1,38 @@
+body {
+  background: #ffebee;
+  font-family: 'Pacifico', cursive;
+  text-align: center;
+  padding: 20px;
+}
+
+.container {
+  background: white;
+  border-radius: 15px;
+  padding: 20px;
+  box-shadow: 0 0 10px rgba(0,0,0,0.1);
+}
+
+.hidden {
+  display: none;
+}
+
+button {
+  background: #ff6b6b;
+  color: white;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 50px;
+  cursor: pointer;
+  font-size: 16px;
+  margin: 10px;
+}
+
+button:hover {
+  background: #ff4757;
+}
+
+.photos img {
+  width: 300px;
+  border-radius: 10px;
+  margin-top: 20px;
+}
